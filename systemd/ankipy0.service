@@ -1,0 +1,15 @@
+[Unit]
+Description=Anki Overdrive JS0
+After=multi-user.target
+
+[Service]
+User=pi
+Group=pi
+Restart=always
+WorkingDirectory=/home/pi/anki/anki-drive-python-sdk/python_app
+ExecStart=/home/pi/anki/anki-drive-python-sdk/python_app/runjs0.sh
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+

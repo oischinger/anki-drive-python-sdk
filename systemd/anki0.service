@@ -1,0 +1,14 @@
+[Unit]
+Description=Anki Overdrive Car 0
+Requires=ankipy0.service
+After=hciuart.service
+PartOf=ankipy0.service
+
+[Service]
+Restart=always
+WorkingDirectory=/home/pi/anki/anki-drive-python-sdk/python_app
+ExecStart=/home/pi/anki/anki-drive-python-sdk/node_app/node_socket_app/runCar0.sh
+
+[Install]
+WantedBy=ankipy0.service
+

@@ -35,6 +35,14 @@ noble.on('stateChange', function(state) {
     }
 });
 
+noble.on('warning', function () {
+    console.log('bye bye: disconnecting all vehichles now...');
+    // disconnect from all vehicles
+    client.vehicles.forEach(function(v) {v.disconnect()});
+    process.exit(0);
+})
+
+
 var server = net.createServer(function(client) {
     client.vehicles = [];
 
@@ -55,6 +63,8 @@ var server = net.createServer(function(client) {
                 case "CONNECT":
                     console.log("connection begins...");
                     var vehicle = noble._peripherals[args[0]];
+                    if (vehicle == null)
+                        process.exit(0);
                     vehicle.connect(function(error) {
                     vehicle.discoverSomeServicesAndCharacteristics(
                         ANKI_DRIVE_SERVICE_UUIDS,

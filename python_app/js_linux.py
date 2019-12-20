@@ -31,6 +31,8 @@ for fn in os.listdir('/dev/input'):
     if fn.startswith('js'):
         print('  /dev/input/%s' % (fn))
 
+sys.stdout.flush()
+
 # We'll store the states here.
 axis_states = {}
 button_states = {}
@@ -113,6 +115,7 @@ button_map = []
 # Open the joystick device.
 fn = args.js
 print('Opening %s...' % fn)
+sys.stdout.flush()
 jsdev = open(fn, 'rb')
 
 # Get the device name.
@@ -121,6 +124,7 @@ buf = array.array('B', [0] * 64)
 ioctl(jsdev, 0x80006a13 + (0x10000 * len(buf)), buf) # JSIOCGNAME(len)
 js_name = buf.tobytes().rstrip(b'\x00').decode('utf-8')
 print('Device name: %s' % js_name)
+sys.stdout.flush()
 
 # Get number of axes and buttons.
 buf = array.array('B', [0])
@@ -152,93 +156,11 @@ for btn in buf[:num_buttons]:
 print('%d axes found: %s' % (num_axes, ', '.join(axis_map)))
 print('%d buttons found: %s' % (num_buttons, ', '.join(button_map)))
 
-def js_thread(out_queue, event):
-    while not event.is_set():
-        evbuf = jsdev.read(8)
-        if evbuf:
-            print("SENDING js event")
-            out_queue.put(evbuf)
-    jsdev.close()
+sys.stdout.flush()
 
-# Main event loop
-def consumer(in_queue, event):
-    current_speed = 400
+car = None
 
-    # let's drive!
-    car = Overdrive(args.host, args.port, args.car)  # init overdrive object
-    car.change_speed(current_speed, 2000)  # set car speed with speed = 400, acceleration = 2000
-
-    max_speed = 1600
-    speed_step = 300
-    accelerate = False
-    decelerate = False
-
-    while not event.is_set():
-        try:
-            evbuf = in_queue.get(True, 0.5)
-            in_queue.task_done()
-            if evbuf:
-                time_val, value, type, number = struct.unpack('IhBB', evbuf)
-
-                if type & 0x80:
-                    print("(initial)", end="")
-
-                if type & 0x01:
-                    button = button_map[number]
-                    if button:
-                        button_states[button] = value
-                        if value:
-                            print("%s pressed" % (button))
-                            if button == "thumb":
-                                car.change_speed(2200, 2000)
-                            elif button == "thumb2":
-                                car.change_speed(400, 2000)
-                            elif button == "base4":
-                                car.disconnect()
-                                car = Overdrive(args.host, args.port, args.car)
-                                car.change_speed(400, 2000)
-                        else:
-                            print("%s released" % (button))
-
-                if type & 0x02:
-                    axis = axis_map[number]
-                    if axis:
-                        fvalue = value / 32767.0
-                        axis_states[axis] = fvalue
-                        print("%s: %.3f" % (axis, fvalue))
-                        if axis == "x" and fvalue<=-1.0:
-                            car.change_lane(400, 2000, 44.5*fvalue)
-                        elif axis == "x" and fvalue>=1.0:
-                            car.change_lane(400, 2000, 44.5*fvalue)
-                        elif axis == "y":
-                            if fvalue >= 0.9:
-                                print("DECEL")
-                                decelerate = True
-                            elif fvalue <= -0.9:
-                                print("ACCEL")
-                                accelerate = True
-                            else:
-                                print("NIX")
-                                accelerate = False
-                                decelerate = False
-        except:
-            print("XXX1")
-            if accelerate:
-                current_speed += (max_speed - current_speed) / 3
-                if current_speed >= max_speed:
-                    current_speed = max_speed
-                car.change_speed(int(current_speed), 2000)
-
-            print("XXX2")
-            if decelerate:
-                current_speed -= current_speed / 3
-                if current_speed <= 0:
-                    current_speed = 0
-                car.change_speed(int(current_speed), 2000)
-
-    car.disconnect()
-    print("EXIT")
-
+executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
 # SIGINT Handler
 def sig_handler(signum, frame):
@@ -246,6 +168,142 @@ def sig_handler(signum, frame):
     event.set()
     time.sleep(0.4)
     sys.exit(0)
+
+def js_thread(out_queue, event):
+    while not event.is_set():
+        evbuf = jsdev.read(8)
+        if evbuf:
+            print("SENDING js event")
+            out_queue.put(evbuf)
+    print("Stopping js event processing")
+    jsdev.close()
+
+# Main event loop
+def consumer(in_queue, event):
+    current_speed = 400
+    current_lane = 0.0
+
+    # let's drive!
+
+    # init overdrive object
+    print("Waiting for node Gateway")
+    time.sleep(1)
+    print("Starting overdrive object")
+    car = Overdrive(args.host, args.port, args.car)
+    #car.change_speed(current_speed, 2000)  # set car speed with speed = 400, acceleration = 2000
+
+    max_speed = 3000
+    accelerate = False
+    decelerate = False
+    left = False
+    right = False
+
+    while not event.is_set():
+        sys.stdout.flush()
+        try:
+            if not in_queue.empty():
+                evbuf = in_queue.get(True, 0.2)
+                in_queue.task_done()
+                if evbuf:
+                    time_val, value, type, number = struct.unpack('IhBB', evbuf)
+
+                    if type & 0x80:
+                        print("(initial)", end="")
+
+                    if type & 0x01:
+                        button = button_map[number]
+                        if button:
+                            button_states[button] = value
+                            if value:
+                                print("%s pressed" % (button))
+                                if button == "thumb":
+                                    accelerate = True
+                                    decelerate = False
+                                elif button == "thumb2":
+                                    accelerate = False
+                                    decelerate = True
+                                elif button == "base4":
+                                    print("Exiting due to keypress. Disconnecting car")
+                                    try:
+                                        del car
+                                    except BaseException as err:
+                                        print("Error deleting car object: {0}".format(err))
+                                    print("Setting ThreadPoolExecutor Event")
+                                    event.set()
+                                    return
+                                    #os.kill(os.getpid(), signal.SIGINT)
+                                    #return
+                            else:
+                                print("%s released" % (button))
+                                if button == "thumb":
+                                    accelerate = False
+                                    decelerate = True
+                                elif button == "thumb2":
+                                    accelerate = False
+                                    decelerate = True
+
+                    if type & 0x02:
+                        axis = axis_map[number]
+                        if axis:
+                            fvalue = value / 32767.0
+                            axis_states[axis] = fvalue
+                            print("%s: %.3f" % (axis, fvalue))
+                            if axis == "x" and fvalue<=-1.0:
+                                left=True
+                                right = False
+                            elif axis == "x" and fvalue>=1.0:
+                                right = True
+                                left = False
+                            elif axis == "y":
+                                if fvalue >= 0.9:
+                                    print("DOWN")
+                                    accelerate = False
+                                    decelerate = True
+                                elif fvalue <= -0.9:
+                                    print("UP")
+                                    accelerate = True
+                                    decelerate = False
+                                else:
+                                    print("UP/DOWN released")
+                                    accelerate = False
+                                    decelerate = True
+                
+            else:
+                time.sleep(0.2)
+
+            if accelerate:
+                current_speed += (max_speed - current_speed) / 4
+                if current_speed >= max_speed:
+                    current_speed = max_speed
+                print("ACCELERATING: %s" %current_speed)
+                car.change_speed(int(current_speed), 2000)
+        
+            if decelerate:
+                current_speed -= current_speed / 3
+                if current_speed <= 200:
+                    current_speed = 0
+                print("DECELERATING: %s" %current_speed)
+                car.change_speed(int(current_speed), 2000)
+            
+            if left:
+                if current_lane >= -100:
+                    current_lane -= 30.0
+                    print("LEFT: %s" %current_lane)
+                    car.change_lane(int(current_speed), 2000, int(current_lane))
+
+            if right:
+                if current_lane <= 100:
+                    current_lane += 30.0
+                    print("RIGHT: %s" %current_lane)
+                    car.change_lane(int(current_speed), 2000, int(current_lane))
+
+        except ValueError:
+            print("Unexpected error:", sys.exc_info()[0])
+
+    print("Disconnecting car")
+    del car
+    print("EXIT")
+
 
 signal.signal(signal.SIGINT, sig_handler)
 
